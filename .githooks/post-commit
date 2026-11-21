@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $(git symbolic-ref --quiet HEAD || true) == refs/heads/main ]] || exit 0
+game_paths=(
+  src/ public/ desktop/ index.html package.json package-lock.json tsconfig.json vite.config.ts
+  scripts/release-linux.sh .githooks/ tests/desktop-smoke.mjs
+)
+if [[ -z $(git diff-tree --root -m --no-commit-id --name-only -r HEAD -- "${game_paths[@]}") ]]; then
+  exit 0
+fi
+
+project=$(git rev-parse --show-toplevel)
+if ! git show HEAD:scripts/release-linux.sh | MARES_RELEASE_PROJECT="$project" bash -s; then
+  printf '\nMarés de Âmbar: atualização pendente. Corrija a etapa informada e rode bash scripts/release-linux.sh.\n' >&2
+fi

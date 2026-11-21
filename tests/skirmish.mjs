@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { checkDesktopResources, openDesktop, reloadDesktopWithMonitoring } from './desktop-smoke.mjs';
+
+const desktopMode = process.argv.includes('--desktop');
+const dataHome = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
+const desktopBinary = process.env.MARES_DESKTOP_BIN || join(dataHome, 'mares-de-ambar', 'current', 'mares-de-ambar');
 
 const origin = new URL(process.env.GAME_URL ?? 'http://127.0.0.1:4173/').origin;
-assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(origin).hostname), 'O teste aceita apenas localhost.');
+if (!desktopMode) assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(origin).hostname), 'O teste aceita apenas localhost.');
 const chrome = process.env.CHROME_PATH ?? (existsSync('/usr/bin/google-chrome') ? '/usr/bin/google-chrome' : undefined);
-const output = new URL('../test-results/', import.meta.url);
+const output = new URL(desktopMode ? '../test-results/desktop/' : '../test-results/', import.meta.url);
 await mkdir(output, { recursive: true });
 
 function snapshot(page, name) {
@@ -15,7 +22,8 @@ function snapshot(page, name) {
 }
 
 async function run(name, scenario) {
-  const browser = await chromium.launch({
+  const desktop = desktopMode ? await openDesktop(desktopBinary) : null;
+  const browser = desktop ? null : await chromium.launch({
     executablePath: chrome,
     args: [
       '--disable-background-timer-throttling',
@@ -28,22 +36,29 @@ async function run(name, scenario) {
   const faults = [];
 
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
-    // Deny external URLs even if a future version of the game tries to request one.
-    await context.route('**/*', (route) => {
-      const url = new URL(route.request().url());
-      if (url.origin === origin) {
-        requests.add(url.pathname);
-        return route.continue();
-      }
-      blocked.push(url.href);
-      return route.abort();
-    });
-    await context.routeWebSocket('**/*', (socket) => {
-      blocked.push(socket.url());
-      socket.close();
-    });
-    const page = await context.newPage();
+    let page;
+    if (desktop) {
+      page = await desktop.electron.firstWindow();
+      page.on('request', (request) => {
+        if (/^(https?|wss?):/.test(request.url())) blocked.push(request.url());
+      });
+    } else {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
+      await context.route('**/*', (route) => {
+        const url = new URL(route.request().url());
+        if (url.origin === origin) {
+          requests.add(url.pathname);
+          return route.continue();
+        }
+        blocked.push(url.href);
+        return route.abort();
+      });
+      await context.routeWebSocket('**/*', (socket) => {
+        blocked.push(socket.url());
+        socket.close();
+      });
+      page = await context.newPage();
+    }
     page.on('pageerror', (error) => faults.push(error.message));
     page.on('console', (message) => {
       if (message.type() === 'error') faults.push(message.text());
@@ -73,7 +88,8 @@ async function run(name, scenario) {
       await page.mouse.click(cursor.x, cursor.y, { button });
     };
 
-    await page.goto(origin, { waitUntil: 'networkidle' });
+    if (desktop) await reloadDesktopWithMonitoring(page);
+    else await page.goto(origin, { waitUntil: 'networkidle' });
     await canvas.waitFor();
     await page.evaluate(() => document.fonts.ready);
 
@@ -87,19 +103,21 @@ async function run(name, scenario) {
         .filter((url) => ['http:', 'https:'].includes(url.protocol) && url.origin !== location.origin)
         .map((url) => url.href));
       assert.deepEqual(remoteEntries, []);
-      assert.ok([...requests].some((url) => url.endsWith('.woff2')), 'O teste precisa carregar fontes locais.');
-      console.log(`OK ${name} · ${requests.size} caminhos locais e 0 externos`);
+      if (!desktop) assert.ok([...requests].some((url) => url.endsWith('.woff2')), 'O teste precisa carregar fontes locais.');
+      const localCount = desktop ? await checkDesktopResources(page) : requests.size;
+      console.log(`OK ${name} · ${localCount} caminhos locais e 0 externos`);
     } catch (error) {
       await snapshot(page, 'falha-' + name);
       console.error(name, await page.locator('#journal').innerText(), faults, blocked);
       throw error;
     }
   } finally {
-    await browser.close();
+    if (desktop) await desktop.close();
+    else await browser.close();
   }
 }
 
-const victory = run('vitoria', async ({ page, click, checkText, selectName, ready, done }) => {
+const victory = async ({ page, click, checkText, selectName, ready, done }) => {
   await click(8, 10, 'left', -15);
   await selectName(/^Trabalhador$/);
   await page.keyboard.down('Shift');
@@ -148,9 +166,9 @@ const victory = run('vitoria', async ({ page, click, checkText, selectName, read
   await checkText('#wood', /^100$/);
   await checkText('#population', /^05\s*\/ 18/);
   assert.equal(await page.locator('.objectives .done').count(), 0);
-});
+};
 
-const movement = run('movimento', async ({ page, click, coords, checkText, selectName }) => {
+const movement = async ({ page, click, coords, checkText, selectName }) => {
   const upper = await coords(11.3, 12.1);
   const lower = await coords(12.65, 14.55);
   await page.mouse.move(upper.x, upper.y);
@@ -180,18 +198,27 @@ const movement = run('movimento', async ({ page, click, coords, checkText, selec
   await checkText('#match-state', /Em andamento/);
   await page.getByRole('button', { name: 'Reiniciar partida' }).click();
   await checkText('#selection-name', /Selecione uma unidade/);
-});
+};
 
-const defeat = run('derrota', async ({ page, checkText }) => {
+const defeat = async ({ page, checkText }) => {
   await checkText('#journal', /iniciou a construção de um quartel/, 35000);
   await checkText('#journal', /quartel da Casa de Ardósia está em operação/, 40000);
   await checkText('#journal', /coluna de Ardósia/, 110000);
   await checkText('#veil-title', /O cais caiu/, 95000);
   await snapshot(page, 'derrota');
   console.log('Tempo da derrota na partida:', await page.locator('#clock').innerText());
-});
+};
 
-const results = await Promise.allSettled([victory, movement, defeat]);
+const scenarios = [['movimento', movement], ['vitoria', victory], ['derrota', defeat]];
+const results = [];
+if (desktopMode) {
+  // The desktop scenarios share the visible display.
+  for (const [name, scenario] of scenarios) {
+    results.push(...await Promise.allSettled([run(name, scenario)]));
+  }
+} else {
+  results.push(...await Promise.allSettled(scenarios.map(([name, scenario]) => run(name, scenario))));
+}
 for (const result of results) {
   if (result.status === 'rejected') {
     console.error(result.reason);

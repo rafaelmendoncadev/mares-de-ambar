@@ -1,0 +1,10 @@
+MARÉS DE ÂMBAR — LINUX x86_64
+
+Extraia o arquivo .tar.gz e execute ./install.sh dentro da pasta extraída.
+O instalador funciona offline e instala no perfil do seu usuário.
+Abra Marés de Âmbar pelo menu de aplicativos ou pela área de trabalho.
+
+A partida e a IA rodam no aplicativo. Feche e reabra o jogo para usar
+uma atualização caso ele esteja aberto durante a instalação.
+A revisão do código está em app/resources/app/REVISION.
+As licenças do Electron estão em app/ e as do jogo, em app/resources/app/dist/licencas/.
