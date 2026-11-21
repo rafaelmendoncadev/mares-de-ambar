@@ -1,0 +1,22 @@
+{
+  "name": "mares-de-ambar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "start": "node scripts/serve.mjs",
+    "test": "node tests/skirmish.mjs"
+  },
+  "dependencies": {
+    "@fontsource/barlow": "5.3.0",
+    "@fontsource/cinzel": "5.3.0",
+    "phaser": "3.90.0"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1",
+    "typescript": "6.0.3",
+    "vite": "8.3.8"
+  }
+}
